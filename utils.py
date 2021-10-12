@@ -63,7 +63,7 @@ def normal_train(model: nn.Module, optimizer: torch.optim, data_loader: torch.ut
         optimizer.zero_grad()
         output = model(input)
         loss = F.cross_entropy(output, target)
-        epoch_loss += loss.data[0]
+        epoch_loss += loss.data
         loss.backward()
         optimizer.step()
     return epoch_loss / len(data_loader)
@@ -78,7 +78,7 @@ def ewc_train(model: nn.Module, optimizer: torch.optim, data_loader: torch.utils
         optimizer.zero_grad()
         output = model(input)
         loss = F.cross_entropy(output, target) + importance * ewc.penalty(model)
-        epoch_loss += loss.data[0]
+        epoch_loss += loss.data
         loss.backward()
         optimizer.step()
     return epoch_loss / len(data_loader)
