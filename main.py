@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from data import PermutedMNIST
 from utils import EWC, ewc_train, normal_train, test
+from mlp import MLP
 
 
 # hyper parameters
@@ -23,22 +24,6 @@ sample_size = 200
 hidden_size = 200
 num_task = 3
 # ************************************* #
-
-
-class MLP(nn.Module):
-    def __init__(self, hidden_size=400):
-        super(MLP, self).__init__()
-        self.fc1 = nn.Linear(28 * 28, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, hidden_size)
-        self.fc4 = nn.Linear(hidden_size, 10)
-
-    def forward(self, input):
-        x = F.relu(self.fc1(input))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        return x
 
 def get_permute_mnist():
     train_loader = {}
@@ -52,7 +37,6 @@ def get_permute_mnist():
                                                      batch_size=batch_size)
         random.shuffle(idx)
     return train_loader, test_loader
-
 
 train_loader, test_loader = get_permute_mnist()
 
@@ -116,5 +100,20 @@ def accuracy_plot(x):
 
 loss, acc, weight = standard_process(epochs)
 loss_plot(loss)
+plt.savefig('loss.png')
 accuracy_plot(acc)
-plt.show()
+plt.savefig('acc.png')
+
+loss_ewc, acc_ewc = ewc_process(epochs, importance=1000, 
+#                                 weight=weight
+                               )
+
+loss_plot(loss_ewc)
+plt.savefig('loss_ewc.png')
+accuracy_plot(acc_ewc)
+plt.savefig('acc_ewc.png')
+
+plt.plot(acc[0], label="sgd")
+plt.plot(acc_ewc[0], label="ewc")
+plt.legend()
+plt.savefig('sgd_ewc.png')
