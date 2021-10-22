@@ -92,26 +92,34 @@ def ewc_process(epochs, importance, use_cuda=True, weight=None):
 def loss_plot(x):
     for t, v in x.items():
         plt.plot(list(range(t * epochs, (t + 1) * epochs)), v)
+    ax = plt.gca()
+    ax.relim()
 
 def accuracy_plot(x):
     for t, v in x.items():
         plt.plot(list(range(t * epochs, num_task * epochs)), v)
     plt.ylim(0, 1)
 
+print("Running standard process")
 loss, acc, weight = standard_process(epochs)
 loss_plot(loss)
 plt.savefig('loss.png')
+plt.clf()
 accuracy_plot(acc)
 plt.savefig('acc.png')
+plt.clf()
 
+print("Running ewc process")
 loss_ewc, acc_ewc = ewc_process(epochs, importance=1000, 
 #                                 weight=weight
                                )
 
 loss_plot(loss_ewc)
 plt.savefig('loss_ewc.png')
+plt.clf()
 accuracy_plot(acc_ewc)
 plt.savefig('acc_ewc.png')
+plt.clf()
 
 plt.plot(acc[0], label="sgd")
 plt.plot(acc_ewc[0], label="ewc")

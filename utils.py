@@ -91,4 +91,4 @@ def test(model: nn.Module, data_loader: torch.utils.data.DataLoader):
         input, target = variable(input), variable(target)
         output = model(input)
         correct += (F.softmax(output, dim=1).max(dim=1)[1] == target).data.sum()
-    return correct / len(data_loader.dataset)
+    return correct / float(len(data_loader.dataset))

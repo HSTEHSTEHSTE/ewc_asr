@@ -19,6 +19,19 @@ class nnetDataset(data.Dataset):
         return self.data[index, :], self.label[index]
 
 
+class nnetLoad(data.Dataset):
+
+    def __init__(self, path, name):
+        self.path = path
+        self.ids = [f for f in listdir(self.path) if f.endswith(name)]
+        self.data = torch.load(join(self.path, name))
+    
+    def __len__(self):
+        return self.data.size(0)
+    
+    def __getitem__(self, index):
+        return self.data[index, : -1], self.data[index, -1]
+
 class nnetDatasetSeq(data.Dataset):
 
     def __init__(self, path):
