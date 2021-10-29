@@ -69,7 +69,6 @@ class nnetRNN(nn.Module):
 
     def forward(self, inputs, lengths):
         seq_len = inputs.size(1)
-        print(inputs.shape, lengths.shape)
         rnn_inputs = pack_padded_sequence(inputs, lengths, True)
         inputs = torch.unsqueeze(inputs, 1)
 

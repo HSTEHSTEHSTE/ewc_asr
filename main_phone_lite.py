@@ -15,6 +15,7 @@ import subprocess
 from torch.autograd import Variable
 import numpy as np
 import logging
+import pickle
 
 from utils import EWC, ewc_train, normal_train, test
 from mlp import MLP
@@ -25,8 +26,6 @@ from copy import deepcopy
 from tensorflow.contrib.framework.python.ops.variables import variable
 
 # hyper parameters
-epochs = 30
-lr = .001
 sample_size = 200
 hidden_size = 200
 num_task = 5
@@ -58,6 +57,7 @@ config = {
     "model_save_interval": 50,
     "lr_tol": .5,
     "lrr": .5,
+    "lr_threshold": .00000001
 }
 
 config = AttributeDict(config)
@@ -199,182 +199,206 @@ class EWC(object):
             loss += _loss.sum()
         return loss
 
+def reset_runtime():
+    lr = .001
+    lr_below_threshold = False
+    epoch_i = ep_start
+
+def train(train_domain, test_domain_current, test_domain_previous_list):
+    reset_runtime()
+    while epoch_i < config.epochs and not lr_below_threshold:
+        print("epoch: ", epoch_i)
+        ####################
+        ##### Training #####
+        ####################
+
+        model.train()
+        train_losses = []
+        tr_fer = []
+
+        batch_l = torch.tensor([117] * config.batch_size)
+
+        # Main training loop
+        for n, (batch_x, lab) in enumerate(data_loader_train_domain0):
+
+            if n > debug_cutoff:
+                break
+
+            # todo: handle last batch
+            indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
+            lab = torch.unsqueeze(lab, 1).long()
+            if config.use_gpu:
+                batch_x = Variable(batch_x).cuda()
+                lab = Variable(lab).cuda()
+            else:
+                batch_x = Variable(batch_x)
+                lab = Variable(lab)
+
+            optimizer.zero_grad()
+            # Main forward pass
+            class_out = model(batch_x, batch_l)
+            class_out = pad2list(class_out, batch_l)
+            lab = pad2list(lab, batch_l)
+            
+            loss = criterion(class_out, lab)
+
+            train_losses.append(loss.item())
+            if config.use_gpu:
+                tr_fer.append(compute_fer(class_out.cpu().data.numpy(), lab.cpu().data.numpy()))
+            else:
+                tr_fer.append(compute_fer(class_out.data.numpy(), lab.data.numpy()))
+
+            loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_thresh)
+            optimizer.step()
+
+        ep_loss_tr.append(np.mean(train_losses))
+        ep_fer_tr.append(np.mean(tr_fer))
+
+        ######################
+        ##### Validation #####
+        ######################
+        model.eval()
+        val_losses = []
+        val_fer = []
+        
+        # Main training loop
+        for (n, (batch_x, lab)) in enumerate(data_loader_train_domain0):
+            if n > debug_cutoff:
+                break
+
+            # _, indices = torch.sort(batch_l, descending=True)
+            # if config.use_gpu:
+            #     batch_x = Variable(batch_x[indices]).cuda()
+            #     batch_l = Variable(batch_l[indices]).cuda()
+            #     lab = Variable(lab[indices]).cuda()
+            # else:
+            #     batch_x = Variable(batch_x[indices])
+            #     batch_l = Variable(batch_l[indices])
+            #     lab = Variable(lab[indices])
+            indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
+            lab = torch.unsqueeze(lab, 1).long()
+            if config.use_gpu:
+                batch_x = Variable(batch_x).cuda()
+                lab = Variable(lab).cuda()
+            else:
+                batch_x = Variable(batch_x)
+                lab = Variable(lab)
+
+            optimizer.zero_grad()
+            # Main forward pass
+            class_out = model(batch_x, batch_l)
+            class_out = pad2list(class_out, batch_l)
+            lab = pad2list(lab, batch_l)
+
+            loss = criterion(class_out, lab)
+
+            val_losses.append(loss.item())
+            if config.use_gpu:
+                val_fer.append(compute_fer(class_out.cpu().data.numpy(), lab.cpu().data.numpy()))
+            else:
+                val_fer.append(compute_fer(class_out.data.numpy(), lab.data.numpy()))
+
+        # Manage learning rate and revert model
+        if epoch_i == 0:
+            err_p = np.mean(val_losses)
+            best_model_state = model.state_dict()
+        else:
+            if np.mean(val_losses) > (100 - config.lr_tol) * err_p / 100:
+                logging.info(
+                    "Val loss went up, Changing learning rate from {:.6f} to {:.6f}".format(lr, config.lrr * lr))
+                lr = config.lrr * lr
+                if lr < config.lr_threshold:
+                    lr_below_threshold = True
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr
+                model.load_state_dict(best_model_state)
+            else:
+                err_p = np.mean(val_losses)
+                best_model_state = model.state_dict()
+
+        ep_loss_dev.append(np.mean(val_losses))
+        ep_fer_dev.append(np.mean(val_fer))
+
+        print_log = "Epoch: {:d} ((lr={:.6f})) Tr loss: {:.3f} :: Tr FER: {:.2f}".format(epoch_i + 1, lr,
+                                                                                            ep_loss_tr[-1],
+                                                                                            ep_fer_tr[-1])
+        print_log += " || Val: {:.3f} :: Val FER: {:.2f}".format(ep_loss_dev[-1], ep_fer_dev[-1])
+        logging.info(print_log)
+
+        if (epoch_i + 1) % config.model_save_interval == 0:
+            model_path = os.path.join(model_dir, config.experiment_name + '__epoch_%d' % (epoch_i + 1) + '.model')
+            torch.save({
+                'epoch': epoch_i + 1,
+                'feature_dim': config.feature_dim,
+                'num_frames': num_frames,
+                'num_classes': config.num_classes,
+                'num_layers': config.num_layers,
+                'hidden_dim': config.hidden_dim,
+                'ep_loss_tr': ep_loss_tr,
+                'ep_loss_dev': ep_loss_dev,
+                'dropout': config.dropout,
+                'lr': lr,
+                'err_p': err_p,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()}, (open(model_path, 'wb')))
+
+
+        total_loss = 0
+        total_accurate = torch.tensor(0.0).cuda()
+        for (n, (batch_x, lab)) in enumerate(data_loader_test_domain0):
+            if n > debug_cutoff:
+                break
+            indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
+            lab = torch.unsqueeze(lab, 1).long()
+            if config.use_gpu:
+                batch_x = Variable(batch_x).cuda()
+                lab = Variable(lab).cuda()
+            else:
+                batch_x = Variable(batch_x)
+                lab = Variable(lab)
+
+            optimizer.zero_grad()
+            # Main forward pass
+            class_out = model(batch_x, batch_l)
+            class_out = pad2list(class_out, batch_l)
+            lab = pad2list(lab, batch_l).cuda()
+            loss = criterion(class_out, lab)
+            class_out_lab = torch.argmax(class_out, dim = 1).cuda()
+            accuracy_tensor = torch.where(class_out_lab - lab < .5, torch.tensor(1).cuda(), torch.tensor(0).cuda())
+            additional_accuracy = torch.sum(accuracy_tensor)
+            total_accurate += additional_accuracy
+            total_loss += loss.item()
+        
+        accuracies_0_0.append(total_accurate / test_size)
+        losses_0_0.append(total_loss / test_size)
+
+        epoch_i += 1
+
 # *********************************** Domain 0 *********************************** #
 accuracies_0_0 = []
 losses_0_0 = []
 
-for epoch_i in range(ep_start, config.epochs):
-
-    print("epoch: ", epoch_i)
-    ####################
-    ##### Training #####
-    ####################
-
-    model.train()
-    train_losses = []
-    tr_fer = []
-
-    batch_l = torch.tensor([117] * config.batch_size)
-
-    # Main training loop
-    for n, (batch_x, lab) in enumerate(data_loader_train_domain0):
-
-        if n > debug_cutoff:
-            break
-
-        # todo: handle last batch
-        indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
-        lab = torch.unsqueeze(lab, 1).long()
-        if config.use_gpu:
-            batch_x = Variable(batch_x).cuda()
-            lab = Variable(lab).cuda()
-        else:
-            batch_x = Variable(batch_x)
-            lab = Variable(lab)
-
-        optimizer.zero_grad()
-        # Main forward pass
-        class_out = model(batch_x, batch_l)
-        class_out = pad2list(class_out, batch_l)
-        lab = pad2list(lab, batch_l)
-        
-        loss = criterion(class_out, lab)
-
-        train_losses.append(loss.item())
-        if config.use_gpu:
-            tr_fer.append(compute_fer(class_out.cpu().data.numpy(), lab.cpu().data.numpy()))
-        else:
-            tr_fer.append(compute_fer(class_out.data.numpy(), lab.data.numpy()))
-
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_thresh)
-        optimizer.step()
-
-    ep_loss_tr.append(np.mean(train_losses))
-    ep_fer_tr.append(np.mean(tr_fer))
-
-    ######################
-    ##### Validation #####
-    ######################
-    model.eval()
-    val_losses = []
-    val_fer = []
-    
-    # Main training loop
-    for (n, (batch_x, lab)) in enumerate(data_loader_train_domain0):
-        if n > debug_cutoff:
-            break
-
-        # _, indices = torch.sort(batch_l, descending=True)
-        # if config.use_gpu:
-        #     batch_x = Variable(batch_x[indices]).cuda()
-        #     batch_l = Variable(batch_l[indices]).cuda()
-        #     lab = Variable(lab[indices]).cuda()
-        # else:
-        #     batch_x = Variable(batch_x[indices])
-        #     batch_l = Variable(batch_l[indices])
-        #     lab = Variable(lab[indices])
-        indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
-        lab = torch.unsqueeze(lab, 1).long()
-        if config.use_gpu:
-            batch_x = Variable(batch_x).cuda()
-            lab = Variable(lab).cuda()
-        else:
-            batch_x = Variable(batch_x)
-            lab = Variable(lab)
-
-        optimizer.zero_grad()
-        # Main forward pass
-        class_out = model(batch_x, batch_l)
-        class_out = pad2list(class_out, batch_l)
-        lab = pad2list(lab, batch_l)
-
-        loss = criterion(class_out, lab)
-
-        val_losses.append(loss.item())
-        if config.use_gpu:
-            val_fer.append(compute_fer(class_out.cpu().data.numpy(), lab.cpu().data.numpy()))
-        else:
-            val_fer.append(compute_fer(class_out.data.numpy(), lab.data.numpy()))
-
-    # Manage learning rate and revert model
-    if epoch_i == 0:
-        err_p = np.mean(val_losses)
-        best_model_state = model.state_dict()
-    else:
-        if np.mean(val_losses) > (100 - config.lr_tol) * err_p / 100:
-            logging.info(
-                "Val loss went up, Changing learning rate from {:.6f} to {:.6f}".format(lr, config.lrr * lr))
-            lr = config.lrr * lr
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-            model.load_state_dict(best_model_state)
-        else:
-            err_p = np.mean(val_losses)
-            best_model_state = model.state_dict()
-
-    ep_loss_dev.append(np.mean(val_losses))
-    ep_fer_dev.append(np.mean(val_fer))
-
-    print_log = "Epoch: {:d} ((lr={:.6f})) Tr loss: {:.3f} :: Tr FER: {:.2f}".format(epoch_i + 1, lr,
-                                                                                        ep_loss_tr[-1],
-                                                                                        ep_fer_tr[-1])
-    print_log += " || Val: {:.3f} :: Val FER: {:.2f}".format(ep_loss_dev[-1], ep_fer_dev[-1])
-    logging.info(print_log)
-
-    if (epoch_i + 1) % config.model_save_interval == 0:
-        model_path = os.path.join(model_dir, config.experiment_name + '__epoch_%d' % (epoch_i + 1) + '.model')
-        torch.save({
-            'epoch': epoch_i + 1,
-            'feature_dim': config.feature_dim,
-            'num_frames': num_frames,
-            'num_classes': config.num_classes,
-            'num_layers': config.num_layers,
-            'hidden_dim': config.hidden_dim,
-            'ep_loss_tr': ep_loss_tr,
-            'ep_loss_dev': ep_loss_dev,
-            'dropout': config.dropout,
-            'lr': lr,
-            'err_p': err_p,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict()}, (open(model_path, 'wb')))
-
-
-    total_loss = 0
-    total_accurate = 0
-    for (n, (batch_x, lab)) in enumerate(data_loader_test_domain0):
-        if n > debug_cutoff:
-            break
-        indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
-        lab = torch.unsqueeze(lab, 1).long()
-        if config.use_gpu:
-            batch_x = Variable(batch_x).cuda()
-            lab = Variable(lab).cuda()
-        else:
-            batch_x = Variable(batch_x)
-            lab = Variable(lab)
-
-        optimizer.zero_grad()
-        # Main forward pass
-        class_out = model(batch_x, batch_l)
-        class_out = pad2list(class_out, batch_l)
-        lab = pad2list(lab, batch_l).cuda()
-        loss = criterion(class_out, lab)
-        class_out_lab = torch.argmax(class_out, dim = 1).cuda()
-        accuracy_tensor = torch.where(class_out_lab - lab < .5, torch.tensor(1).cuda(), torch.tensor(0).cuda())
-        additional_accuracy = torch.sum(accuracy_tensor)
-        total_accurate += additional_accuracy
-        total_loss += loss.item()
-    
-    accuracies_0_0.append(total_accurate / test_size)
-    losses_0_0.append(total_loss / test_size)
+train(data_loader_train_domain0, data_loader_dev_domain0, [data_loader_test_domain0])
 
 plt.plot(accuracies_0_0)
 plt.savefig('accuracies_0_0.png')
+plt.clf()
+
+plt.plot(losses_0_0)
+plt.savefig('losses_0_0.png')
+plt.clf()
 
 # *********************************** Domain 1 *********************************** #
 
-for epoch_i in range(ep_start, config.epochs):
+accuracies_0_1 = []
+losses_0_1 = []
+accuracies_1_1 = []
+losses_1_1 = []
+
+reset_runtime()
+
+while epoch_i < config.epochs and not lr_below_threshold:
 
     print("epoch: ", epoch_i)
     ####################
@@ -477,6 +501,8 @@ for epoch_i in range(ep_start, config.epochs):
             logging.info(
                 "Val loss went up, Changing learning rate from {:.6f} to {:.6f}".format(lr, config.lrr * lr))
             lr = config.lrr * lr
+            if lr < config.lr_threshold:
+                lr_below_threshold = True
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
             model.load_state_dict(best_model_state)
@@ -510,7 +536,8 @@ for epoch_i in range(ep_start, config.epochs):
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict()}, (open(model_path, 'wb')))
 
-
+    total_loss = 0
+    total_accurate = torch.tensor(0.0).cuda()
     for (n, (batch_x, lab)) in enumerate(data_loader_test_domain1):
         if n > debug_cutoff:
             break
@@ -529,5 +556,53 @@ for epoch_i in range(ep_start, config.epochs):
         class_out = pad2list(class_out, batch_l)
         lab = pad2list(lab, batch_l)
         lab = torch.argmax(lab)
-        # todo: update accuracy
-        # todo: update loss
+        class_out_lab = torch.argmax(class_out, dim = 1).cuda()
+        accuracy_tensor = torch.where(class_out_lab - lab < .5, torch.tensor(1).cuda(), torch.tensor(0).cuda())
+        additional_accuracy = torch.sum(accuracy_tensor)
+        total_accurate += additional_accuracy
+        total_loss += loss.item()
+    
+    accuracies_1_1.append(total_accurate / test_size)
+    losses_1_1.append(total_loss / test_size)
+
+    total_loss = 0
+    total_accurate = torch.tensor(0.0).cuda()
+    for (n, (batch_x, lab)) in enumerate(data_loader_test_domain0):
+        if n > debug_cutoff:
+            break
+        indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
+        lab = torch.unsqueeze(lab, 1).long()
+        if config.use_gpu:
+            batch_x = Variable(batch_x).cuda()
+            lab = Variable(lab).cuda()
+        else:
+            batch_x = Variable(batch_x)
+            lab = Variable(lab)
+
+        optimizer.zero_grad()
+        # Main forward pass
+        class_out = model(batch_x, batch_l)
+        class_out = pad2list(class_out, batch_l)
+        lab = pad2list(lab, batch_l)
+        lab = torch.argmax(lab)
+        class_out_lab = torch.argmax(class_out, dim = 1).cuda()
+        accuracy_tensor = torch.where(class_out_lab - lab < .5, torch.tensor(1).cuda(), torch.tensor(0).cuda())
+        additional_accuracy = torch.sum(accuracy_tensor)
+        total_accurate += additional_accuracy
+        total_loss += loss.item()
+    
+    accuracies_0_1.append(total_accurate / (test_size))
+    losses_0_1.append(total_loss / (test_size))
+
+    epoch_i += 1
+
+print(len(accuracies_0_0), len(accuracies_0_1))
+xs_1 = np.arange(len(accuracies_0_0), len(accuracies_0_0) + len(accuracies_0_1))
+accuracies_0_0 += accuracies_0_1
+
+plt.plot(accuracies_0_0)
+print(xs_1)
+print(accuracies_0_0, accuracies_1_1)
+plt.plot(xs_1, accuracies_1_1)
+plt.savefig('accuracies_1_1.png')
+plt.clf()
