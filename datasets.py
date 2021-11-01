@@ -1,6 +1,8 @@
 from os import listdir
 from os.path import join
 import pickle
+import random
+import numpy as np
 
 import torch
 from torch.utils import data
@@ -30,7 +32,12 @@ class nnetLoad(data.Dataset):
         return self.data.size(0)
     
     def __getitem__(self, index):
-        return self.data[index, : -1], self.data[index, -1]
+        return self.data[index, :-1], self.data[index, -1]
+
+    def random_sample(self, number_k):
+        all_indices = list(np.arange(0, self.data.shape[0]))
+        indexing_list = random.sample(all_indices, k=number_k)
+        return self.data[indexing_list, :-1], self.data[indexing_list, -1]
 
 class nnetDatasetSeq(data.Dataset):
 

@@ -57,7 +57,8 @@ config = {
     "model_save_interval": 50,
     "lr_tol": .5,
     "lrr": .5,
-    "lr_threshold": .00000001
+    "lr_threshold": .00000001,
+    "previous_random_sample_size": 200
 }
 
 config = AttributeDict(config)
@@ -158,57 +159,22 @@ best_model_state = model.state_dict()
 
 criterion = nn.CrossEntropyLoss()
 
-class EWC(object):
-    def __init__(self, model: nn.Module, dataset: list):
-
-        self.model = model
-        self.dataset = dataset
-
-        self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
-        self._means = {}
-        self._precision_matrices = self._diag_fisher()
-
-        for n, p in deepcopy(self.params).items():
-            self._means[n] = variable(p.data)
-
-    def _diag_fisher(self):
-        precision_matrices = {}
-        for n, p in deepcopy(self.params).items():
-            p.data.zero_()
-            precision_matrices[n] = variable(p.data)
-
-        self.model.eval()
-        for input in self.dataset:
-            self.model.zero_grad()
-            input = variable(input)
-            output = self.model(input).view(1, -1)
-            label = output.max(1)[1].view(-1)
-            loss = F.nll_loss(F.log_softmax(output, dim=1), label)
-            loss.backward()
-
-            for n, p in self.model.named_parameters():
-                precision_matrices[n].data += p.grad.data ** 2 / len(self.dataset)
-
-        precision_matrices = {n: p for n, p in precision_matrices.items()}
-        return precision_matrices
-
-    def penalty(self, model: nn.Module):
-        loss = 0
-        for n, p in model.named_parameters():
-            _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
-            loss += _loss.sum()
-        return loss
-
 def reset_runtime():
     lr = .001
     lr_below_threshold = False
     epoch_i = ep_start
     return lr, lr_below_threshold, epoch_i
 
-def train(train_domain, dev_domain, test_domain_previous_list):
+def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_list = []):
     lr, lr_below_threshold, epoch_i = reset_runtime()
     accuracies = [[] for i in range(len(test_domain_previous_list))]
     losses = [[] for i in range(len(test_domain_previous_list))]
+    
+    old_tasks = []
+    if len(previous_dataset_list) > 0:
+        for previous_dataset in previous_dataset_list:
+            old_tasks.append(previous_dataset.random_sample(config.previous_random_sample_size))
+
     while epoch_i < config.epochs and not lr_below_threshold:
         print("epoch: ", epoch_i)
         ####################
@@ -244,6 +210,9 @@ def train(train_domain, dev_domain, test_domain_previous_list):
             lab = pad2list(lab, batch_l)
             
             loss = criterion(class_out, lab)
+            
+            if len(old_tasks) > 0:
+                loss += 1000 * EWC(model, old_tasks, config).penalty(model)
 
             train_losses.append(loss.item())
             if config.use_gpu:
@@ -252,6 +221,7 @@ def train(train_domain, dev_domain, test_domain_previous_list):
                 tr_fer.append(compute_fer(class_out.data.numpy(), lab.data.numpy()))
 
             loss.backward()
+
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_thresh)
             optimizer.step()
 
@@ -289,6 +259,7 @@ def train(train_domain, dev_domain, test_domain_previous_list):
                 lab = Variable(lab)
 
             optimizer.zero_grad()
+            
             # Main forward pass
             class_out = model(batch_x, batch_l)
             class_out = pad2list(class_out, batch_l)
@@ -395,7 +366,7 @@ plt.savefig('losses_0_0.png')
 plt.clf()
 
 # *********************************** Domain 1 *********************************** #
-accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1])
+accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1], [dataset_domain0])
 
 accuracies_0_1 = accuracies_0_0 + accuracies[0]
 losses_0_1 = losses_0_0 + losses[0]
@@ -415,7 +386,7 @@ plt.savefig('losses_1_1.png')
 plt.clf()
 
 # *********************************** Domain 2 *********************************** #
-accuracies, losses = train(data_loader_train_domain2, data_loader_dev_domain2, [data_loader_test_domain0, data_loader_test_domain1, data_loader_test_domain2])
+accuracies, losses = train(data_loader_train_domain2, data_loader_dev_domain2, [data_loader_test_domain0, data_loader_test_domain1, data_loader_test_domain2], [dataset_domain0, dataset_domain1])
 
 accuracies_0_2 = accuracies_0_1 + accuracies[0]
 losses_0_2 = losses_0_1 + losses[0]
@@ -440,7 +411,7 @@ plt.savefig('losses_2_2.png')
 plt.clf()
 
 # *********************************** Domain 3 *********************************** #
-accuracies, losses = train(data_loader_train_domain3, data_loader_dev_domain3, [data_loader_test_domain0, data_loader_test_domain1, data_loader_test_domain2, data_loader_test_domain3])
+accuracies, losses = train(data_loader_train_domain3, data_loader_dev_domain3, [data_loader_test_domain0, data_loader_test_domain1, data_loader_test_domain2, data_loader_test_domain3], [dataset_domain0, dataset_domain1, dataset_domain2])
 
 accuracies_0_3 = accuracies_0_2 + accuracies[0]
 losses_0_3 = losses_0_2 + losses[0]
@@ -470,7 +441,7 @@ plt.savefig('losses_3_3.png')
 plt.clf()
 
 # *********************************** Domain 4 *********************************** #
-accuracies, losses = train(data_loader_train_domain4, data_loader_dev_domain4, [data_loader_test_domain0, data_loader_test_domain1, data_loader_test_domain2, data_loader_test_domain3, data_loader_test_domain4])
+accuracies, losses = train(data_loader_train_domain4, data_loader_dev_domain4, [data_loader_test_domain0, data_loader_test_domain1, data_loader_test_domain2, data_loader_test_domain3, data_loader_test_domain4], [dataset_domain0, dataset_domain1, dataset_domain2, dataset_domain3])
 
 accuracies_0_4 = accuracies_0_3 + accuracies[0]
 losses_0_4 = losses_0_3 + losses[0]

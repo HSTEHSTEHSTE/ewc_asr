@@ -14,10 +14,11 @@ def variable(t: torch.Tensor, use_cuda=True, **kwargs):
 
 
 class EWC(object):
-    def __init__(self, model: nn.Module, dataset: list):
+    def __init__(self, model: nn.Module, dataset: list, config):
 
         self.model = model
         self.dataset = dataset
+        self.config = config
 
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
@@ -28,23 +29,27 @@ class EWC(object):
 
     def _diag_fisher(self):
         precision_matrices = {}
+        torch.backends.cudnn.enabled = False
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
-            precision_matrices[n] = variable(p.data)
+            precision_matrices[n] = p
 
         self.model.eval()
-        for input in self.dataset:
+        for input_data_number, input_data in enumerate(self.dataset):
             self.model.zero_grad()
-            input = variable(input)
-            output = self.model(input).view(1, -1)
+            input = variable(input_data[0])
+            output = self.model(input, torch.tensor([117] * self.config.previous_random_sample_size)).view(1, -1)
             label = output.max(1)[1].view(-1)
             loss = F.nll_loss(F.log_softmax(output, dim=1), label)
             loss.backward()
 
             for n, p in self.model.named_parameters():
-                precision_matrices[n].data += p.grad.data ** 2 / len(self.dataset)
+                if p.grad is not None:
+                    precision_matrices[n].data += p.grad.data ** 2 / len(self.dataset)
 
         precision_matrices = {n: p for n, p in precision_matrices.items()}
+        torch.backends.cudnn.enabled = True
+        self.model.train()
         return precision_matrices
 
     def penalty(self, model: nn.Module):
