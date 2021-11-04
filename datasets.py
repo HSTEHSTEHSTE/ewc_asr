@@ -55,6 +55,9 @@ class nnetDatasetSeq(data.Dataset):
     def __getitem__(self, index):
         x = torch.load(join(self.path, self.ids[index]))
         l = self.lengths[self.ids[index]]
+        print(x.shape)
+        x = torch.nn.functional.pad(x, (0, 2048 - x.shape[0]), value = 0)
+        print(x.shape)
         lab = self.labels[self.ids[index]]
         return x, l, lab
 
