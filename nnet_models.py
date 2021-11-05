@@ -58,32 +58,31 @@ class nnetRNN(nn.Module):
 
     def __init__(self, input_size, num_layers, hidden_size, out_size, dropout):
         super(nnetRNN, self).__init__()
-        input_sizes = [input_size] + [hidden_size] * (num_layers - 1)
-        output_sizes = [hidden_size] * num_layers
+        self.input_sizes = [input_size] + [hidden_size] * (num_layers - 1)
+        self.output_sizes = [hidden_size] * num_layers
 
         self.layers = nn.ModuleList(
             [nn.GRU(input_size=in_size, hidden_size=out_size, batch_first=True) for (in_size, out_size) in
-             zip(input_sizes, output_sizes)])
+             zip(self.input_sizes, self.output_sizes)])
         self.dropout = nn.Dropout(dropout)
         self.regression = nn.Conv1d(in_channels=hidden_size, out_channels=out_size, kernel_size=1, stride=1)
 
     def forward(self, inputs, lengths):
         seq_len = inputs.size(1)
         rnn_inputs = pack_padded_sequence(inputs, lengths, True)
-        inputs = torch.unsqueeze(inputs, 1)
 
         for i, layer in enumerate(self.layers):
-            rnn_inputs, _ = layer(inputs)
+            rnn_inputs, _ = layer(rnn_inputs)
 
-            # rnn_inputs, _ = pad_packed_sequence(
-            #     rnn_inputs, True, total_length=seq_len)
+            rnn_inputs, _ = pad_packed_sequence(
+                rnn_inputs, True, total_length=seq_len)
 
             if i + 1 < len(self.layers):
                 rnn_inputs = self.dropout(rnn_inputs)
 
-            # rnn_inputs = pack_padded_sequence(rnn_inputs, lengths, True)
+            rnn_inputs = pack_padded_sequence(rnn_inputs, lengths, True)
 
-        # rnn_inputs, _ = pad_packed_sequence(rnn_inputs, True, total_length=seq_len)
+        rnn_inputs, _ = pad_packed_sequence(rnn_inputs, True, total_length=seq_len)
 
         rnn_inputs = self.regression(torch.transpose(rnn_inputs, 1, 2))
 

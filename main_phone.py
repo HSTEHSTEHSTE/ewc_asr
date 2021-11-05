@@ -28,8 +28,7 @@ from tensorflow.contrib.framework.python.ops.variables import variable
 # hyper parameters
 sample_size = 200
 hidden_size = 200
-num_task = 5
-num_frames = 9
+num_frames = 1
 # ************************************* #
 
 class AttributeDict(dict):
@@ -43,7 +42,7 @@ config = {
     "store_path": "/home/xli257/ASR/store",
     "train_set": "train_si284",
     "num_layers": 5,
-    "hidden_dim": 117,
+    "hidden_dim": 512,
     "feature_dim": 13,
     "epochs": 2,
     "learning_rate": .001,
@@ -90,16 +89,16 @@ optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay
 dataset_train_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/train_si284'))
 dataset_dev_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/test_dev93'))
 dataset_test_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/test_eval92'))
-data_loader_train_domain0 = torch.utils.data.DataLoader(dataset_train_domain0, batch_size=config.batch_size, shuffle=True)
-data_loader_dev_domain0 = torch.utils.data.DataLoader(dataset_dev_domain0, batch_size=config.batch_size, shuffle=True)
-data_loader_test_domain0 = torch.utils.data.DataLoader(dataset_test_domain0, batch_size=config.batch_size, shuffle=True)
+data_loader_train_domain0 = torch.utils.data.DataLoader(dataset_train_domain0, batch_size=config.batch_size, shuffle=True, num_workers=1)
+data_loader_dev_domain0 = torch.utils.data.DataLoader(dataset_dev_domain0, batch_size=config.batch_size, shuffle=True, num_workers=1)
+data_loader_test_domain0 = torch.utils.data.DataLoader(dataset_test_domain0, batch_size=config.batch_size, shuffle=True, num_workers=1)
 
 dataset_train_domain1 = nnetDatasetSeq(os.path.join(config.egs_dir, 'reverb/tr_simu_8ch'))
 dataset_dev_test_domain1 = nnetDatasetSeq(os.path.join(config.egs_dir, 'reverb/dt_simu_8ch')) # len = 11872
 dataset_dev_domain1, dataset_test_domain1, _ = torch.utils.data.random_split(dataset_dev_test_domain1, [1500, 10000, 11872 - 11500])
-data_loader_train_domain1 = torch.utils.data.DataLoader(dataset_train_domain1, batch_size=config.batch_size, shuffle=True)
-data_loader_dev_domain1 = torch.utils.data.DataLoader(dataset_dev_domain1, batch_size=config.batch_size, shuffle=True)
-data_loader_test_domain1 = torch.utils.data.DataLoader(dataset_test_domain1, batch_size=config.batch_size, shuffle=True)
+data_loader_train_domain1 = torch.utils.data.DataLoader(dataset_train_domain1, batch_size=config.batch_size, shuffle=True, num_workers=1)
+data_loader_dev_domain1 = torch.utils.data.DataLoader(dataset_dev_domain1, batch_size=config.batch_size, shuffle=True, num_workers=1)
+data_loader_test_domain1 = torch.utils.data.DataLoader(dataset_test_domain1, batch_size=config.batch_size, shuffle=True, num_workers=1)
 
 model_dir = os.path.join(config.store_path, config.experiment_name + '.dir')
 
@@ -172,9 +171,10 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             if n > debug_cutoff:
                 break
 
+            batch_l = torch.clamp(batch_l, max=2048)
+
             # todo: handle last batch
             _, indices = torch.sort(batch_l, descending=True)
-            lab = torch.unsqueeze(lab, 1).long()
             if config.use_gpu:
                 batch_x = Variable(batch_x[indices]).cuda()
                 batch_l = Variable(batch_l[indices]).cuda()
@@ -189,7 +189,6 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             class_out = model(batch_x, batch_l)
             class_out = pad2list(class_out, batch_l)
             lab = pad2list(lab, batch_l)
-            
             loss = criterion(class_out, lab)
             
             if len(old_tasks) > 0:
@@ -217,7 +216,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
         val_fer = []
         
         # Main training loop
-        for (n, (batch_x, lab)) in enumerate(dev_domain):
+        for (n, (batch_x, batch_l, lab)) in enumerate(dev_domain):
             if n > debug_cutoff:
                 break
 
@@ -230,14 +229,15 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             #     batch_x = Variable(batch_x[indices])
             #     batch_l = Variable(batch_l[indices])
             #     lab = Variable(lab[indices])
-            indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
-            lab = torch.unsqueeze(lab, 1).long()
+            _, indices = torch.sort(batch_l, descending=True)
             if config.use_gpu:
-                batch_x = Variable(batch_x).cuda()
-                lab = Variable(lab).cuda()
+                batch_x = Variable(batch_x[indices]).cuda()
+                batch_l = Variable(batch_l[indices]).cuda()
+                lab = Variable(lab[indices]).cuda()
             else:
-                batch_x = Variable(batch_x)
-                lab = Variable(lab)
+                batch_x = Variable(batch_x[indices])
+                batch_l = Variable(batch_l[indices])
+                lab = Variable(lab[indices])
 
             optimizer.zero_grad()
             
@@ -301,17 +301,18 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
         for test_domain_number, test_domain in enumerate(test_domain_previous_list):
             total_loss = 0
             total_accurate = torch.tensor(0.0).cuda()
-            for (n, (batch_x, lab)) in enumerate(test_domain):
+            for (n, (batch_x, batch_l, lab)) in enumerate(test_domain):
                 if n > debug_cutoff:
                     break
-                indices = torch.tensor(batch_l, dtype = torch.int64).cuda()
-                lab = torch.unsqueeze(lab, 1).long()
+                _, indices = torch.sort(batch_l, descending=True)
                 if config.use_gpu:
-                    batch_x = Variable(batch_x).cuda()
-                    lab = Variable(lab).cuda()
+                    batch_x = Variable(batch_x[indices]).cuda()
+                    batch_l = Variable(batch_l[indices]).cuda()
+                    lab = Variable(lab[indices]).cuda()
                 else:
-                    batch_x = Variable(batch_x)
-                    lab = Variable(lab)
+                    batch_x = Variable(batch_x[indices])
+                    batch_l = Variable(batch_l[indices])
+                    lab = Variable(lab[indices])
 
                 optimizer.zero_grad()
                 # Main forward pass
