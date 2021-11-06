@@ -62,6 +62,13 @@ class nnetDatasetSeq(data.Dataset):
         lab = lab[:2048]
         return x, l, lab
 
+    def random_sample(self, number_k):
+        id = random.sample(self.ids, k=1)[0]
+        x, l, lab = self.__getitem__(id)
+        all_indices = list(np.arange(0, x.shape[0]))
+        indexing_list = random.sample(all_indices, k=number_k)
+        return x[indexing_list], l[indexing_list], lab[indexing_list]
+
 
 class nnetDataset3Seq(data.Dataset):
 
