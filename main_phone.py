@@ -44,7 +44,7 @@ config = {
     "num_layers": 5,
     "hidden_dim": 512,
     "feature_dim": 13,
-    "epochs": 2,
+    "epochs": 100,
     "learning_rate": .001,
     "dropout": 0,
     "num_classes": 42,
@@ -153,7 +153,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
     old_tasks = []
     if len(previous_dataset_list) > 0:
         for previous_dataset in previous_dataset_list:
-            old_tasks.append(previous_dataset.random_sample(config.previous_random_sample_size))
+            old_tasks.append(torch.utils.data.DataLoader(previous_dataset.random_sample(config.previous_random_sample_size)))
 
     while epoch_i < config.epochs and not lr_below_threshold:
         print("epoch: ", epoch_i)

@@ -17,12 +17,14 @@ class EWC(object):
     def __init__(self, model: nn.Module, dataset: list, config):
 
         self.model = model
-        self.dataset = dataset
+        self.data_domain = dataset
         self.config = config
+        self.nllloss = torch.nn.NLLLoss()
 
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
         self._precision_matrices = self._diag_fisher()
+
 
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
@@ -35,17 +37,17 @@ class EWC(object):
             precision_matrices[n] = p
 
         self.model.eval()
-        for input_data_number, input_data in enumerate(self.dataset):
+        for input_data_number, (x, l, lab) in enumerate(self.data_domain):
             self.model.zero_grad()
-            input = variable(input_data[0])
-            output = self.model(input, torch.tensor([117] * self.config.previous_random_sample_size)).view(1, -1)
-            label = output.max(1)[1].view(-1)
-            loss = F.nll_loss(F.log_softmax(output, dim=1), label)
+            input = variable(x)
+            output = self.model(input, l).squeeze(0)
+            label = torch.argmax(output, dim=1).cuda()
+            loss = self.nllloss(F.log_softmax(output, dim=1), label)
             loss.backward()
 
             for n, p in self.model.named_parameters():
                 if p.grad is not None:
-                    precision_matrices[n].data += p.grad.data ** 2 / len(self.dataset)
+                    precision_matrices[n].data += p.grad.data ** 2 / (l.shape[0])
 
         precision_matrices = {n: p for n, p in precision_matrices.items()}
         torch.backends.cudnn.enabled = True
