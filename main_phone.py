@@ -57,7 +57,7 @@ config = {
     "lr_tol": .5,
     "lrr": .5,
     "lr_threshold": .00000001,
-    "previous_random_sample_size": 200
+    "previous_random_sample_size": 2
 }
 
 config = AttributeDict(config)
