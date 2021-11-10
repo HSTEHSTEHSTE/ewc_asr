@@ -40,6 +40,7 @@ class EWC(object):
         for input_data_number, (x, l, lab) in enumerate(self.data_domain):
             self.model.zero_grad()
             input = variable(x)
+            l = torch.clamp(l, max=1024)
             output = self.model(input, l).squeeze(0)
             label = torch.argmax(output, dim=1).cuda()
             loss = self.nllloss(F.log_softmax(output, dim=1), label)

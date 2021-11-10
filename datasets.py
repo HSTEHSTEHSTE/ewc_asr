@@ -55,11 +55,12 @@ class nnetDatasetSeq(data.Dataset):
     def __getitem__(self, index):
         x = torch.load(join(self.path, self.ids[index]))
         l = self.lengths[self.ids[index]]
-        x = torch.nn.functional.pad(x, (0, 0, 0, 2048 - x.shape[0]), value = 0)
-        x = x[:, :2048]
+        l = max(l, 1024)
+        x = torch.nn.functional.pad(x, (0, 0, 0, 1024 - x.shape[0]), value = 0)
+        x = x[:1024, :]
         lab = self.labels[self.ids[index]]
-        lab = torch.nn.functional.pad(lab, (0, 2048 - lab.shape[0]), value = 0)
-        lab = lab[:2048]
+        lab = torch.nn.functional.pad(lab, (0, 1024 - lab.shape[0]), value = 0)
+        lab = lab[:1024]
         return x, l, lab
 
     def random_sample(self, number_k):

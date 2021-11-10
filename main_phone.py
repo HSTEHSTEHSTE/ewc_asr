@@ -42,7 +42,7 @@ config = {
     "store_path": "/home/xli257/ASR/store",
     "train_set": "train_si284",
     "num_layers": 5,
-    "hidden_dim": 512,
+    "hidden_dim": 1024,
     "feature_dim": 13,
     "epochs": 100,
     "learning_rate": .001,
@@ -56,7 +56,7 @@ config = {
     "model_save_interval": 50,
     "lr_tol": .5,
     "lrr": .5,
-    "lr_threshold": .00000001,
+    "lr_threshold": .0000001,
     "previous_random_sample_size": 2
 }
 
@@ -89,16 +89,16 @@ optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay
 dataset_train_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/train_si284'))
 dataset_dev_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/test_dev93'))
 dataset_test_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/test_eval92'))
-data_loader_train_domain0 = torch.utils.data.DataLoader(dataset_train_domain0, batch_size=config.batch_size, shuffle=True, num_workers=1)
-data_loader_dev_domain0 = torch.utils.data.DataLoader(dataset_dev_domain0, batch_size=config.batch_size, shuffle=True, num_workers=1)
-data_loader_test_domain0 = torch.utils.data.DataLoader(dataset_test_domain0, batch_size=config.batch_size, shuffle=True, num_workers=1)
+data_loader_train_domain0 = torch.utils.data.DataLoader(dataset_train_domain0, batch_size=config.batch_size, shuffle=True, num_workers=5)
+data_loader_dev_domain0 = torch.utils.data.DataLoader(dataset_dev_domain0, batch_size=config.batch_size, shuffle=True, num_workers=5)
+data_loader_test_domain0 = torch.utils.data.DataLoader(dataset_test_domain0, batch_size=config.batch_size, shuffle=True, num_workers=5)
 
 dataset_train_domain1 = nnetDatasetSeq(os.path.join(config.egs_dir, 'reverb/tr_simu_8ch'))
 dataset_dev_test_domain1 = nnetDatasetSeq(os.path.join(config.egs_dir, 'reverb/dt_simu_8ch')) # len = 11872
 dataset_dev_domain1, dataset_test_domain1, _ = torch.utils.data.random_split(dataset_dev_test_domain1, [1500, 10000, 11872 - 11500])
-data_loader_train_domain1 = torch.utils.data.DataLoader(dataset_train_domain1, batch_size=config.batch_size, shuffle=True, num_workers=1)
-data_loader_dev_domain1 = torch.utils.data.DataLoader(dataset_dev_domain1, batch_size=config.batch_size, shuffle=True, num_workers=1)
-data_loader_test_domain1 = torch.utils.data.DataLoader(dataset_test_domain1, batch_size=config.batch_size, shuffle=True, num_workers=1)
+data_loader_train_domain1 = torch.utils.data.DataLoader(dataset_train_domain1, batch_size=config.batch_size, shuffle=True, num_workers=5)
+data_loader_dev_domain1 = torch.utils.data.DataLoader(dataset_dev_domain1, batch_size=config.batch_size, shuffle=True, num_workers=5)
+data_loader_test_domain1 = torch.utils.data.DataLoader(dataset_test_domain1, batch_size=config.batch_size, shuffle=True, num_workers=5)
 
 model_dir = os.path.join(config.store_path, config.experiment_name + '.dir')
 
@@ -122,7 +122,7 @@ torch.save({
     'model_state_dict': model.state_dict(),
     'err_p': 10000000,
     'optimizer_state_dict': optimizer.state_dict()}, (open(model_path, 'wb')))
-debug_cutoff = 1024
+debug_cutoff = 999999999
 
 # Set environment variable for GPU ID
 id = get_device_id()
@@ -153,7 +153,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
     old_tasks = []
     if len(previous_dataset_list) > 0:
         for previous_dataset in previous_dataset_list:
-            old_tasks.append(torch.utils.data.DataLoader(previous_dataset.random_sample(config.previous_random_sample_size)))
+            old_tasks.append(torch.utils.data.DataLoader(previous_dataset.random_sample(config.previous_random_sample_size), num_workers=5))
 
     while epoch_i < config.epochs and not lr_below_threshold:
         print("epoch: ", epoch_i)
@@ -171,7 +171,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             if n > debug_cutoff:
                 break
 
-            batch_l = torch.clamp(batch_l, max=2048)
+            batch_l = torch.clamp(batch_l, max=1024)
 
             # todo: handle last batch
             _, indices = torch.sort(batch_l, descending=True)
@@ -220,6 +220,8 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             if n > debug_cutoff:
                 break
 
+            batch_l = torch.clamp(batch_l, max=1024)
+
             # _, indices = torch.sort(batch_l, descending=True)
             # if config.use_gpu:
             #     batch_x = Variable(batch_x[indices]).cuda()
@@ -247,6 +249,9 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             lab = pad2list(lab, batch_l)
 
             loss = criterion(class_out, lab)
+
+            if len(old_tasks) > 0:
+                loss += 1000 * EWC(model, old_tasks, config).penalty(model)
 
             val_losses.append(loss.item())
             if config.use_gpu:
@@ -304,6 +309,9 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             for (n, (batch_x, batch_l, lab)) in enumerate(test_domain):
                 if n > debug_cutoff:
                     break
+
+                batch_l = torch.clamp(batch_l, max=1024)
+
                 _, indices = torch.sort(batch_l, descending=True)
                 if config.use_gpu:
                     batch_x = Variable(batch_x[indices]).cuda()
@@ -326,8 +334,8 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
                 total_accurate += additional_accuracy
                 total_loss += loss.item()
             
-            accuracies[test_domain_number].append(total_accurate / n)
-            losses[test_domain_number].append(total_loss / n)
+            accuracies[test_domain_number].append(total_accurate / (n + 1))
+            losses[test_domain_number].append(total_loss / (n + 1))
 
         epoch_i += 1
 
