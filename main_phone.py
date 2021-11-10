@@ -42,7 +42,7 @@ config = {
     "store_path": "/home/xli257/ASR/store",
     "train_set": "train_si284",
     "num_layers": 5,
-    "hidden_dim": 1024,
+    "hidden_dim": 512,
     "feature_dim": 13,
     "epochs": 100,
     "learning_rate": .001,
@@ -171,7 +171,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             if n > debug_cutoff:
                 break
 
-            batch_l = torch.clamp(batch_l, max=1024)
+            batch_l = torch.clamp(batch_l, max=512)
 
             # todo: handle last batch
             _, indices = torch.sort(batch_l, descending=True)
@@ -220,7 +220,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             if n > debug_cutoff:
                 break
 
-            batch_l = torch.clamp(batch_l, max=1024)
+            batch_l = torch.clamp(batch_l, max=512)
 
             # _, indices = torch.sort(batch_l, descending=True)
             # if config.use_gpu:
@@ -310,7 +310,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
                 if n > debug_cutoff:
                     break
 
-                batch_l = torch.clamp(batch_l, max=1024)
+                batch_l = torch.clamp(batch_l, max=512)
 
                 _, indices = torch.sort(batch_l, descending=True)
                 if config.use_gpu:
@@ -334,7 +334,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
                 total_accurate += additional_accuracy
                 total_loss += loss.item()
             
-            accuracies[test_domain_number].append(total_accurate / (n + 1))
+            accuracies[test_domain_number].append(total_accurate / (n + 1) / (lab.shape[0] * lab.shape[1]))
             losses[test_domain_number].append(total_loss / (n + 1))
 
         epoch_i += 1
