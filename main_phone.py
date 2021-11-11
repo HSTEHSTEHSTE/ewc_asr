@@ -53,11 +53,14 @@ config = {
     "experiment_name": "exp_run",
     "use_gpu": True,
     "clip_thresh": 1,
-    "model_save_interval": 50,
+    "model_save_interval": 10,
     "lr_tol": .5,
     "lrr": .5,
-    "lr_threshold": .0000001,
-    "previous_random_sample_size": 2
+    "lr_threshold": .000001,
+    "previous_random_sample_size": 2,
+    "load_data_workers": 5,
+    "load_checkpoint": None,
+    "seq_len": 512
 }
 
 config = AttributeDict(config)
@@ -89,16 +92,16 @@ optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay
 dataset_train_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/train_si284'))
 dataset_dev_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/test_dev93'))
 dataset_test_domain0 = nnetDatasetSeq(os.path.join(config.egs_dir, 'wsj/test_eval92'))
-data_loader_train_domain0 = torch.utils.data.DataLoader(dataset_train_domain0, batch_size=config.batch_size, shuffle=True, num_workers=5)
-data_loader_dev_domain0 = torch.utils.data.DataLoader(dataset_dev_domain0, batch_size=config.batch_size, shuffle=True, num_workers=5)
-data_loader_test_domain0 = torch.utils.data.DataLoader(dataset_test_domain0, batch_size=config.batch_size, shuffle=True, num_workers=5)
+data_loader_train_domain0 = torch.utils.data.DataLoader(dataset_train_domain0, batch_size=config.batch_size, shuffle=True, num_workers=config.load_data_workers)
+data_loader_dev_domain0 = torch.utils.data.DataLoader(dataset_dev_domain0, batch_size=config.batch_size, shuffle=True, num_workers=config.load_data_workers)
+data_loader_test_domain0 = torch.utils.data.DataLoader(dataset_test_domain0, batch_size=config.batch_size, shuffle=True, num_workers=config.load_data_workers)
 
 dataset_train_domain1 = nnetDatasetSeq(os.path.join(config.egs_dir, 'reverb/tr_simu_8ch'))
 dataset_dev_test_domain1 = nnetDatasetSeq(os.path.join(config.egs_dir, 'reverb/dt_simu_8ch')) # len = 11872
 dataset_dev_domain1, dataset_test_domain1, _ = torch.utils.data.random_split(dataset_dev_test_domain1, [1500, 10000, 11872 - 11500])
-data_loader_train_domain1 = torch.utils.data.DataLoader(dataset_train_domain1, batch_size=config.batch_size, shuffle=True, num_workers=5)
-data_loader_dev_domain1 = torch.utils.data.DataLoader(dataset_dev_domain1, batch_size=config.batch_size, shuffle=True, num_workers=5)
-data_loader_test_domain1 = torch.utils.data.DataLoader(dataset_test_domain1, batch_size=config.batch_size, shuffle=True, num_workers=5)
+data_loader_train_domain1 = torch.utils.data.DataLoader(dataset_train_domain1, batch_size=config.batch_size, shuffle=True, num_workers=config.load_data_workers)
+data_loader_dev_domain1 = torch.utils.data.DataLoader(dataset_dev_domain1, batch_size=config.batch_size, shuffle=True, num_workers=config.load_data_workers)
+data_loader_test_domain1 = torch.utils.data.DataLoader(dataset_test_domain1, batch_size=config.batch_size, shuffle=True, num_workers=config.load_data_workers)
 
 model_dir = os.path.join(config.store_path, config.experiment_name + '.dir')
 
@@ -153,7 +156,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
     old_tasks = []
     if len(previous_dataset_list) > 0:
         for previous_dataset in previous_dataset_list:
-            old_tasks.append(torch.utils.data.DataLoader(previous_dataset.random_sample(config.previous_random_sample_size), num_workers=5))
+            old_tasks.append(torch.utils.data.DataLoader(previous_dataset.random_sample(config.previous_random_sample_size), num_workers=config.load_data_workers))
 
     while epoch_i < config.epochs and not lr_below_threshold:
         print("epoch: ", epoch_i)
@@ -171,7 +174,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             if n > debug_cutoff:
                 break
 
-            batch_l = torch.clamp(batch_l, max=512)
+            batch_l = torch.clamp(batch_l, max=config.seq_len)
 
             # todo: handle last batch
             _, indices = torch.sort(batch_l, descending=True)
@@ -220,7 +223,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             if n > debug_cutoff:
                 break
 
-            batch_l = torch.clamp(batch_l, max=512)
+            batch_l = torch.clamp(batch_l, max=config.seq_len)
 
             # _, indices = torch.sort(batch_l, descending=True)
             # if config.use_gpu:
@@ -306,11 +309,12 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
         for test_domain_number, test_domain in enumerate(test_domain_previous_list):
             total_loss = 0
             total_accurate = torch.tensor(0.0).cuda()
+            total_number = 0
             for (n, (batch_x, batch_l, lab)) in enumerate(test_domain):
                 if n > debug_cutoff:
                     break
 
-                batch_l = torch.clamp(batch_l, max=512)
+                batch_l = torch.clamp(batch_l, max=config.seq_len)
 
                 _, indices = torch.sort(batch_l, descending=True)
                 if config.use_gpu:
@@ -333,9 +337,10 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
                 additional_accuracy = torch.sum(accuracy_tensor)
                 total_accurate += additional_accuracy
                 total_loss += loss.item()
+                total_number += lab.shape[0]
             
-            accuracies[test_domain_number].append(total_accurate / (n + 1) / (lab.shape[0] * lab.shape[1]))
-            losses[test_domain_number].append(total_loss / (n + 1))
+            accuracies[test_domain_number].append(total_accurate / total_number)
+            losses[test_domain_number].append(total_loss / total_number)
 
         epoch_i += 1
 

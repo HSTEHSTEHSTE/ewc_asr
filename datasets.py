@@ -41,13 +41,14 @@ class nnetLoad(data.Dataset):
 
 class nnetDatasetSeq(data.Dataset):
 
-    def __init__(self, path):
+    def __init__(self, path, seq_len = 512):
         self.path = path
         with open(join(path, 'lengths.pkl'), 'rb') as f:
             self.lengths = pickle.load(f)
         self.labels = torch.load(join(self.path, 'labels.pkl'))
         self.ids = [f for f in listdir(self.path) if f.endswith('.pt')]  # list(self.labels.keys())
         self.ids = [i for i in self.ids if i in list(self.labels.keys())]
+        self.seq_len = seq_len
 
     def __len__(self):
         return len(self.ids)
@@ -55,16 +56,16 @@ class nnetDatasetSeq(data.Dataset):
     def __getitem__(self, index):
         x = torch.load(join(self.path, self.ids[index]))
         l = self.lengths[self.ids[index]]
-        l = max(l, 512)
-        x = torch.nn.functional.pad(x, (0, 0, 0, 512 - x.shape[0]), value = 0)
-        x = x[:512, :]
+        l = max(l, self.seq_len)
+        x = torch.nn.functional.pad(x, (0, 0, 0, self.seq_len - x.shape[0]), value = 0)
+        x = x[:self.seq_len, :]
         lab = self.labels[self.ids[index]]
-        lab = torch.nn.functional.pad(lab, (0, 512 - lab.shape[0]), value = 0)
-        lab = lab[:512]
+        lab = torch.nn.functional.pad(lab, (0, self.seq_len - lab.shape[0]), value = 0)
+        lab = lab[:self.seq_len]
         return x, l, lab
 
     def random_sample(self, number_k):
-        id = random.sample(self.ids, k=1)[0]
+        id = random.sample(self.ids[:self.seq_len], k=1)[0]
         x, l, lab = self.__getitem__(self.ids.index(id))
         all_indices = list(np.arange(0, l))
         indexing_list = random.sample(all_indices, k=number_k)

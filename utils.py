@@ -14,12 +14,13 @@ def variable(t: torch.Tensor, use_cuda=True, **kwargs):
 
 
 class EWC(object):
-    def __init__(self, model: nn.Module, dataset: list, config):
+    def __init__(self, model: nn.Module, dataset: list, config, seq_len = 512):
 
         self.model = model
         self.data_domain = dataset
         self.config = config
         self.nllloss = torch.nn.NLLLoss()
+        self.seq_len = seq_len
 
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
@@ -40,7 +41,7 @@ class EWC(object):
         for input_data_number, (x, l, lab) in enumerate(self.data_domain):
             self.model.zero_grad()
             input = variable(x)
-            l = torch.clamp(l, max=512)
+            l = torch.clamp(l, max=self.seq_len)
             output = self.model(input, l).squeeze(0)
             label = torch.argmax(output, dim=1).cuda()
             loss = self.nllloss(F.log_softmax(output, dim=1), label)
