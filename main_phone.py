@@ -16,6 +16,7 @@ from torch.autograd import Variable
 import numpy as np
 import logging
 import pickle
+import time
 
 from utils import EWC, ewc_train, normal_train, test
 from mlp import MLP
@@ -23,7 +24,7 @@ from mlp import MLP
 from nnet_models import nnetRNN
 from datasets import nnetDatasetSeq
 from copy import deepcopy
-from tensorflow.contrib.framework.python.ops.variables import variable
+# from tensorflow.contrib.framework.python.ops.variables import variable
 
 # hyper parameters
 sample_size = 200
@@ -57,7 +58,7 @@ config = {
     "lr_tol": .5,
     "lrr": .5,
     "lr_threshold": .000001,
-    "previous_random_sample_size": 2,
+    "previous_random_sample_size": 1,
     "load_data_workers": 5,
     "load_checkpoint": None,
     "seq_len": 512
@@ -156,7 +157,12 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
     old_tasks = []
     if len(previous_dataset_list) > 0:
         for previous_dataset in previous_dataset_list:
-            old_tasks.append(torch.utils.data.DataLoader(previous_dataset.random_sample(config.previous_random_sample_size), num_workers=config.load_data_workers))
+            old_tasks.append(previous_dataset.random_sample(config.previous_random_sample_size))
+        old_task = torch.utils.data.DataLoader(dataset=torch.utils.data.ConcatDataset(old_tasks), num_workers=config.load_data_workers)
+        gpu_id = None
+        if config.use_gpu:
+            gpu_id = id
+        ewc_object = EWC(model, old_task, config=config, seq_len=config.seq_len, device_id=gpu_id)
 
     while epoch_i < config.epochs and not lr_below_threshold:
         print("epoch: ", epoch_i)
@@ -195,7 +201,8 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             loss = criterion(class_out, lab)
             
             if len(old_tasks) > 0:
-                loss += 1000 * EWC(model, old_tasks, config).penalty(model)
+                ewc_object.update_model_weights(model)
+                loss += 1000 * ewc_object.penalty(model)
 
             train_losses.append(loss.item())
             if config.use_gpu:
@@ -254,7 +261,9 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             loss = criterion(class_out, lab)
 
             if len(old_tasks) > 0:
-                loss += 1000 * EWC(model, old_tasks, config).penalty(model)
+                ewc_object.update_model_weights(model)
+                loss += 1000 * ewc_object.penalty(model)
+                model.eval()
 
             val_losses.append(loss.item())
             if config.use_gpu:

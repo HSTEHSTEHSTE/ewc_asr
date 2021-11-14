@@ -5,6 +5,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Variable
 import torch.utils.data
+import tqdm
+import time
 
 
 def variable(t: torch.Tensor, use_cuda=True, **kwargs):
@@ -14,17 +16,17 @@ def variable(t: torch.Tensor, use_cuda=True, **kwargs):
 
 
 class EWC(object):
-    def __init__(self, model: nn.Module, dataset: list, config, seq_len = 512):
+    def __init__(self, model: nn.Module, dataset: torch.utils.data.DataLoader, config, seq_len = 512, device_id = None):
 
         self.model = model
         self.data_domain = dataset
         self.config = config
         self.nllloss = torch.nn.NLLLoss()
         self.seq_len = seq_len
+        self.device_id = device_id
 
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
-        self._precision_matrices = self._diag_fisher()
 
 
         for n, p in deepcopy(self.params).items():
@@ -32,29 +34,33 @@ class EWC(object):
 
     def _diag_fisher(self):
         precision_matrices = {}
-        torch.backends.cudnn.enabled = False
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
             precision_matrices[n] = p
 
-        self.model.eval()
-        for input_data_number, (x, l, lab) in enumerate(self.data_domain):
+        self.model.train()
+        for x, l, lab in self.data_domain:
             self.model.zero_grad()
             input = variable(x)
             l = torch.clamp(l, max=self.seq_len)
+            if self.device_id is not None:
+                l.cuda()
+                input.cuda()
             output = self.model(input, l).squeeze(0)
             label = torch.argmax(output, dim=1).cuda()
             loss = self.nllloss(F.log_softmax(output, dim=1), label)
             loss.backward()
-
             for n, p in self.model.named_parameters():
                 if p.grad is not None:
-                    precision_matrices[n].data += p.grad.data ** 2 / (l.shape[0])
+                    precision_matrices[n].data += p.grad.data ** 2 / self.config.batch_size
 
         precision_matrices = {n: p for n, p in precision_matrices.items()}
-        torch.backends.cudnn.enabled = True
         self.model.train()
         return precision_matrices
+
+    def update_model_weights(self, model: nn.Module):
+        self.model = model
+        self._precision_matrices = self._diag_fisher()
 
     def penalty(self, model: nn.Module):
         loss = 0

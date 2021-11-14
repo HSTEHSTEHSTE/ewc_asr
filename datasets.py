@@ -41,12 +41,15 @@ class nnetLoad(data.Dataset):
 
 class nnetDatasetSeq(data.Dataset):
 
-    def __init__(self, path, seq_len = 512):
+    def __init__(self, path, seq_len = 512, ids = None):
         self.path = path
         with open(join(path, 'lengths.pkl'), 'rb') as f:
             self.lengths = pickle.load(f)
         self.labels = torch.load(join(self.path, 'labels.pkl'))
-        self.ids = [f for f in listdir(self.path) if f.endswith('.pt')]  # list(self.labels.keys())
+        if ids is None:
+            self.ids = [f for f in listdir(self.path) if f.endswith('.pt')]  # list(self.labels.keys())
+        else:
+            self.ids = ids
         self.ids = [i for i in self.ids if i in list(self.labels.keys())]
         self.seq_len = seq_len
 
@@ -65,12 +68,8 @@ class nnetDatasetSeq(data.Dataset):
         return x, l, lab
 
     def random_sample(self, number_k):
-        id = random.sample(self.ids[:self.seq_len], k=1)[0]
-        x, l, lab = self.__getitem__(self.ids.index(id))
-        all_indices = list(np.arange(0, l))
-        indexing_list = random.sample(all_indices, k=number_k)
-        return x[indexing_list], number_k, lab[indexing_list]
-
+        ids = random.sample(self.ids[:self.seq_len], k=number_k)
+        return nnetDatasetSeq(self.path, self.seq_len, ids)
 
 class nnetDataset3Seq(data.Dataset):
 
