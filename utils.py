@@ -61,6 +61,10 @@ class EWC(object):
     def update_model_weights(self, model: nn.Module):
         self.model = model
         self._precision_matrices = self._diag_fisher()
+        self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
+        self._means = {}
+        for n, p in deepcopy(self.params).items():
+            self._means[n] = variable(p.data)
 
     def penalty(self, model: nn.Module):
         loss = 0
@@ -68,7 +72,6 @@ class EWC(object):
             _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
             loss += _loss.sum()
         return loss
-
 
 def normal_train(model: nn.Module, optimizer: torch.optim, data_loader: torch.utils.data.DataLoader):
     model.train()

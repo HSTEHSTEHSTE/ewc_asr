@@ -47,7 +47,7 @@ config = {
     "feature_dim": 13,
     "epochs": 100,
     "learning_rate": .001,
-    "dropout": 0,
+    "dropout": .3,
     "num_classes": 42,
     "weight_decay": 0,
     "batch_size": 64,
@@ -58,7 +58,7 @@ config = {
     "lr_tol": .5,
     "lrr": .5,
     "lr_threshold": .000001,
-    "previous_random_sample_size": 1,
+    "previous_random_sample_size": 5,
     "load_data_workers": 5,
     "load_checkpoint": None,
     "seq_len": 512
@@ -85,6 +85,7 @@ def compute_fer(x, l):
 
 model = nnetRNN(config.feature_dim * num_frames, config.num_layers, config.hidden_dim,
                     config.num_classes, config.dropout)
+# optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
 optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
 
 # Load datasets
@@ -139,8 +140,15 @@ ep_fer_tr = []
 ep_loss_dev = []
 ep_fer_dev = []
 best_model_state = model.state_dict()
+fisher_matrices = []
+fisher_matrix_norms = []
 
 criterion = nn.CrossEntropyLoss()
+
+outfile_0 = open("result_0", mode="wb")
+outfile_1 = open("result_1", mode="wb")
+matrix_file = open("matrix", mode="wb")
+norm_file = open("norm", mode="wb")
 
 def reset_runtime():
     lr = .001
@@ -202,7 +210,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             
             if len(old_tasks) > 0:
                 ewc_object.update_model_weights(model)
-                loss += 1000 * ewc_object.penalty(model)
+                loss += ewc_object.penalty(model) / lr
 
             train_losses.append(loss.item())
             if config.use_gpu:
@@ -217,6 +225,9 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
 
         ep_loss_tr.append(np.mean(train_losses))
         ep_fer_tr.append(np.mean(tr_fer))
+
+        if len(old_tasks) > 0:
+            fisher_matrices.append(ewc_object._precision_matrices)
 
         ######################
         ##### Validation #####
@@ -261,9 +272,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             loss = criterion(class_out, lab)
 
             if len(old_tasks) > 0:
-                ewc_object.update_model_weights(model)
-                loss += 1000 * ewc_object.penalty(model)
-                model.eval()
+                loss += ewc_object.penalty(model) / lr
 
             val_losses.append(loss.item())
             if config.use_gpu:
@@ -296,7 +305,6 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
                                                                                             ep_loss_tr[-1],
                                                                                             ep_fer_tr[-1])
         print_log += " || Val: {:.3f} :: Val FER: {:.2f}".format(ep_loss_dev[-1], ep_fer_dev[-1])
-        logging.info(print_log)
 
         if (epoch_i + 1) % config.model_save_interval == 0:
             model_path = os.path.join(model_dir, config.experiment_name + '__epoch_%d' % (epoch_i + 1) + '.model')
@@ -317,8 +325,9 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
 
         for test_domain_number, test_domain in enumerate(test_domain_previous_list):
             total_loss = 0
-            total_accurate = torch.tensor(0.0).cuda()
+            total_accurate = 0
             total_number = 0
+            test_fer = []
             for (n, (batch_x, batch_l, lab)) in enumerate(test_domain):
                 if n > debug_cutoff:
                     break
@@ -344,12 +353,62 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
                 class_out_lab = torch.argmax(class_out, dim = 1).cuda()
                 accuracy_tensor = torch.where(class_out_lab - lab < .5, torch.tensor(1).cuda(), torch.tensor(0).cuda())
                 additional_accuracy = torch.sum(accuracy_tensor)
-                total_accurate += additional_accuracy
+                total_accurate += additional_accuracy.item()
                 total_loss += loss.item()
                 total_number += lab.shape[0]
+                if config.use_gpu:
+                    test_fer.append(compute_fer(class_out.cpu().data.numpy(), lab.cpu().data.numpy()))
+                else:
+                    test_fer.append(compute_fer(class_out.data.numpy(), lab.data.numpy()))
+            domain_test_fer = np.mean(test_fer)
             
             accuracies[test_domain_number].append(total_accurate / total_number)
-            losses[test_domain_number].append(total_loss / total_number)
+            losses[test_domain_number].append(total_loss / (n + 1))
+
+            print_log += " || Domain: {:d} :: Test: {:.3f} :: Test FER: {:.2f}".format(test_domain_number, losses[test_domain_number][-1], domain_test_fer)
+
+        if len(old_tasks) > 0:
+            # Run through old task sample
+            total_loss = 0
+            total_accurate = 0
+            total_number = 0
+            test_fer = []
+            for (n, (batch_x, batch_l, lab)) in enumerate(old_task):
+                if n > debug_cutoff:
+                    break
+
+                batch_l = torch.clamp(batch_l, max=config.seq_len)
+
+                _, indices = torch.sort(batch_l, descending=True)
+                if config.use_gpu:
+                    batch_x = Variable(batch_x[indices]).cuda()
+                    batch_l = Variable(batch_l[indices]).cuda()
+                    lab = Variable(lab[indices]).cuda()
+                else:
+                    batch_x = Variable(batch_x[indices])
+                    batch_l = Variable(batch_l[indices])
+                    lab = Variable(lab[indices])
+
+                optimizer.zero_grad()
+                # Main forward pass
+                class_out = model(batch_x, batch_l)
+                class_out = pad2list(class_out, batch_l)
+                lab = pad2list(lab, batch_l).cuda()
+                loss = criterion(class_out, lab)
+                class_out_lab = torch.argmax(class_out, dim = 1).cuda()
+                accuracy_tensor = torch.where(class_out_lab - lab < .5, torch.tensor(1).cuda(), torch.tensor(0).cuda())
+                additional_accuracy = torch.sum(accuracy_tensor)
+                total_accurate += additional_accuracy.item()
+                total_loss += loss.item()
+                total_number += lab.shape[0]
+                if config.use_gpu:
+                    test_fer.append(compute_fer(class_out.cpu().data.numpy(), lab.cpu().data.numpy()))
+                else:
+                    test_fer.append(compute_fer(class_out.data.numpy(), lab.data.numpy()))
+            domain_test_fer = np.mean(test_fer)
+
+            print_log += " || Sample: Test: {:.3f} :: Test FER: {:.2f}".format(total_loss / (n + 1), domain_test_fer)
+        logging.info(print_log)
 
         epoch_i += 1
 
@@ -360,6 +419,8 @@ accuracies, losses = train(data_loader_train_domain0, data_loader_dev_domain0, [
 
 accuracies_0_0 = accuracies[0]
 losses_0_0 = losses[0]
+pickle.dump([accuracies_0_0, losses_0_0], outfile_0)
+outfile_0.close()
 
 plt.plot(accuracies_0_0)
 plt.savefig('accuracies_0_0.png')
@@ -370,12 +431,18 @@ plt.savefig('losses_0_0.png')
 plt.clf()
 
 # *********************************** Domain 1 *********************************** #
-accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1], [dataset_test_domain0])
+# With EWC
+# accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1], [dataset_test_domain0])
+
+# Without EWC
+accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1], [])
 
 accuracies_0_1 = accuracies_0_0 + accuracies[0]
 losses_0_1 = losses_0_0 + losses[0]
 accuracies_1_1 = accuracies[1]
 losses_1_1 = losses[1]
+pickle.dump([accuracies_0_1, accuracies_1_1, losses_0_1, losses_1_1], outfile_1)
+outfile_1.close()
 
 xs_1 = np.arange(len(accuracies_0_0), len(accuracies_0_0) + len(accuracies[0]))
 
@@ -388,3 +455,10 @@ plt.plot(losses_0_1)
 plt.plot(xs_1, losses_1_1)
 plt.savefig('losses_1_1.png')
 plt.clf()
+
+if fisher_matrices is not None:
+    pickle.dump(fisher_matrices, matrix_file)
+if fisher_matrix_norms is not None:
+    pickle.dump(fisher_matrix_norms, norm_file)
+matrix_file.close()
+norm_file.close()
