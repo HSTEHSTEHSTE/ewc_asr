@@ -1,5 +1,6 @@
 import os
 import matplotlib
+from torch.utils import data
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -18,7 +19,7 @@ import logging
 import pickle
 import time
 
-from utils import EWC, ewc_train, normal_train, test
+from utils import CL, pad2list, softmax, compute_fer
 from mlp import MLP
 
 from nnet_models import nnetRNN
@@ -61,7 +62,8 @@ config = {
     "previous_random_sample_size": 5,
     "load_data_workers": 5,
     "load_checkpoint": None,
-    "seq_len": 512
+    "seq_len": 512,
+    "cl_type": 'ewc'
 }
 
 config = AttributeDict(config)
@@ -70,18 +72,6 @@ def get_device_id():
     cmd = 'free-gpu'
     proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
     return proc.stdout.decode('utf-8').strip().split()[0]
-
-def pad2list(padded_seq, lengths):
-    return torch.cat([padded_seq[i, 0:lengths[i]] for i in range(padded_seq.size(0))])
-
-def softmax(X):
-    return np.exp(X) / np.tile(np.sum(np.exp(X), axis=1)[:, None], (1, X.shape[1]))
-
-def compute_fer(x, l):
-    x = softmax(x)
-    preds = np.argmax(x, axis=1)
-    err = (float(preds.shape[0]) - float(np.sum(np.equal(preds, l)))) * 100 / float(preds.shape[0])
-    return err
 
 model = nnetRNN(config.feature_dim * num_frames, config.num_layers, config.hidden_dim,
                     config.num_classes, config.dropout)
@@ -156,7 +146,6 @@ def reset_runtime():
     epoch_i = ep_start
     return lr, lr_below_threshold, epoch_i
 
-
 def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_list = []):
     lr, lr_below_threshold, epoch_i = reset_runtime()
     accuracies = [[] for i in range(len(test_domain_previous_list))]
@@ -170,7 +159,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
         gpu_id = None
         if config.use_gpu:
             gpu_id = id
-        ewc_object = EWC(model, old_task, config=config, seq_len=config.seq_len, device_id=gpu_id)
+        cl_object = CL(model = model, dataset = old_task, config = config, criterion = criterion, seq_len = config.seq_len, device_id = gpu_id, type = config.cl_type)
 
     while epoch_i < config.epochs and not lr_below_threshold:
         print("epoch: ", epoch_i)
@@ -209,8 +198,8 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             loss = criterion(class_out, lab)
             
             if len(old_tasks) > 0:
-                ewc_object.update_model_weights(model)
-                loss += ewc_object.penalty(model) / lr
+                cl_object.update_model_weights(model)
+                loss += 10 * cl_object.penalty(model) / lr
 
             train_losses.append(loss.item())
             if config.use_gpu:
@@ -227,7 +216,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
         ep_fer_tr.append(np.mean(tr_fer))
 
         if len(old_tasks) > 0:
-            fisher_matrices.append(ewc_object._precision_matrices)
+            fisher_matrices.append(cl_object._precision_matrices)
 
         ######################
         ##### Validation #####
@@ -272,7 +261,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             loss = criterion(class_out, lab)
 
             if len(old_tasks) > 0:
-                loss += ewc_object.penalty(model) / lr
+                loss += 10 * cl_object.penalty(model) / lr
 
             val_losses.append(loss.item())
             if config.use_gpu:
@@ -431,11 +420,7 @@ plt.savefig('losses_0_0.png')
 plt.clf()
 
 # *********************************** Domain 1 *********************************** #
-# With EWC
-# accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1], [dataset_test_domain0])
-
-# Without EWC
-accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1], [])
+accuracies, losses = train(data_loader_train_domain1, data_loader_dev_domain1, [data_loader_test_domain0, data_loader_test_domain1], [dataset_test_domain0])
 
 accuracies_0_1 = accuracies_0_0 + accuracies[0]
 losses_0_1 = losses_0_0 + losses[0]
