@@ -58,12 +58,13 @@ config = {
     "model_save_interval": 10,
     "lr_tol": .5,
     "lrr": .5,
-    "lr_threshold": .000001,
+    "lr_threshold": .00001,
     "previous_random_sample_size": 5,
     "load_data_workers": 5,
     "load_checkpoint": None,
     "seq_len": 512,
-    "cl_type": 'ewc'
+    "cl_type": 'wca',
+    "cl_weight": .01
 }
 
 config = AttributeDict(config)
@@ -75,7 +76,6 @@ def get_device_id():
 
 model = nnetRNN(config.feature_dim * num_frames, config.num_layers, config.hidden_dim,
                     config.num_classes, config.dropout)
-# optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
 optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
 
 # Load datasets
@@ -176,7 +176,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
 
             if n > debug_cutoff:
                 break
-
+            
             batch_l = torch.clamp(batch_l, max=config.seq_len)
 
             # todo: handle last batch
@@ -190,7 +190,6 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
                 batch_l = Variable(batch_l[indices])
                 lab = Variable(lab[indices])
 
-            optimizer.zero_grad()
             # Main forward pass
             class_out = model(batch_x, batch_l)
             class_out = pad2list(class_out, batch_l)
@@ -199,8 +198,9 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             
             if len(old_tasks) > 0:
                 cl_object.update_model_weights(model)
-                loss += 10 * cl_object.penalty(model) / lr
+                loss += config.cl_weight * cl_object.penalty(model, data=(batch_x, batch_l, lab))
 
+            optimizer.zero_grad()
             train_losses.append(loss.item())
             if config.use_gpu:
                 tr_fer.append(compute_fer(class_out.cpu().data.numpy(), lab.cpu().data.numpy()))
@@ -215,7 +215,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
         ep_loss_tr.append(np.mean(train_losses))
         ep_fer_tr.append(np.mean(tr_fer))
 
-        if len(old_tasks) > 0:
+        if len(old_tasks) > 0 and config.cl_type == 'ewc':
             fisher_matrices.append(cl_object._precision_matrices)
 
         ######################
@@ -261,7 +261,7 @@ def train(train_domain, dev_domain, test_domain_previous_list, previous_dataset_
             loss = criterion(class_out, lab)
 
             if len(old_tasks) > 0:
-                loss += 10 * cl_object.penalty(model) / lr
+                loss += config.cl_weight * cl_object.penalty(model, data=(batch_x, batch_l, lab))
 
             val_losses.append(loss.item())
             if config.use_gpu:

@@ -38,14 +38,14 @@ class CL(object):
         self.type = type
         # wca: Weight Constraint Adaptation, ewc: Elastic Weight Consolidation, lwf: Learning Without Forgetting (Soft KL Divergence)
         if self.type == 'ewc' or self.type == 'wca':
-            self.model = model
+            self.model = deepcopy(model)
             self.data_domain = dataset
             self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
             self._means = {}
             for n, p in deepcopy(self.params).items():
                 self._means[n] = p.data
         if self.type == 'lwf':
-            self.model = deepcopy(self.model)
+            self.model = deepcopy(model)
 
     def _diag_fisher(self):
         precision_matrices = {}
@@ -53,7 +53,6 @@ class CL(object):
             p.data.zero_()
             precision_matrices[n] = p
 
-        self.model.train()
         for x, l, lab in self.data_domain:
             self.model.zero_grad()
             input = variable(x)
@@ -70,7 +69,6 @@ class CL(object):
                     precision_matrices[n].data += p.grad.data ** 2 / self.config.batch_size
 
         precision_matrices = {n: p for n, p in precision_matrices.items()}
-        self.model.train()
         return precision_matrices
 
     def update_model_weights(self, model: nn.Module):
@@ -86,7 +84,7 @@ class CL(object):
         if self.type == 'wca':
             for n, p in model.named_parameters():
                 _loss = (p - self._means[n]) ** 2
-                loss += _loss.cum()
+                loss += _loss.sum()
 
         if self.type == 'ewc':
             for n, p in model.named_parameters():
@@ -94,12 +92,12 @@ class CL(object):
                 loss += _loss.sum()
 
         if self.type == 'lwf':
+            self.model.train()
             batch_x = data[0]
             batch_l = data[1]
             lab = data[2]
             class_out = self.model(batch_x, batch_l)
             class_out = pad2list(class_out, batch_l)
-            lab = pad2list(lab, batch_l)
             loss = self.criterion(class_out, lab)
 
         return loss
